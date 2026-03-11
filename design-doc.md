@@ -1,6 +1,6 @@
 # governa-rag — Design Document
 
-**Status:** Draft v0.7 — FINAL para implementação  
+**Status:** Draft v0.8 — FINAL para implementação  
 **Autora:** Luciana Reynaud Ferreira  
 **Repositório:** `github.com/[handle]/governa-rag`
 
@@ -35,23 +35,50 @@ Sistema de análise de conformidade que cruza documentos internos do usuário co
 
 **Secundária:** Advogado de privacidade ou escritório de advocacia que atende múltiplos clientes regulados. Caso de uso: triagem rápida de documentos antes de análise jurídica profunda.
 
+### 1.4 Por que não usar ChatGPT ou Claude com web search?
+
+Esta é a pergunta correta e merece resposta direta.
+
+LLMs com acesso à internet em tempo real respondem perguntas sobre leis. Este produto analisa documentos privados à luz de leis — e a diferença não é de grau, é de categoria. Há cinco propriedades estruturais que tornam um sistema RAG privado e auditável irredutível a uma interface de chat, independente do modelo subjacente.
+
+**Confidencialidade do documento analisado.** O caso de uso central envolve contratos com cláusulas estratégicas, RIPDs com dados de titulares, relatórios de incidente com informação regulatoriamente sensível. Esses documentos não podem trafegar para APIs externas sem DPA formal, avaliação de risco e, na prática, consentimento do titular ou autorização legal explícita — condições que na maioria dos contextos empresariais brasileiros não estão satisfeitas. O governa-rag aplica Presidio localmente antes de qualquer embedding e nunca envia o documento do usuário para infraestrutura externa. Isso não é feature: é pré-condição de existência do produto no contexto jurídico-empresarial.
+
+**Corpus autoritativo, estável e rastreável.** Web search retorna o que ranqueia no momento da consulta — um blog jurídico, uma interpretação de escritório de advocacia, um artigo desatualizado anterior a uma emenda podem aparecer antes do texto consolidado oficial. Para análise de conformidade, a fonte importa tanto quanto o conteúdo. O corpus do governa-rag é curado, versionado por `corpus_version`, e cada resposta é rastreável ao `article_ref` e ao hash exato do documento normativo utilizado. Reprodutibilidade de análise — executar a mesma query em datas distintas e obter resposta ancorada na mesma base normativa — é uma propriedade impossível por design em sistemas que dependem de web search.
+
+**Citação dupla como contrato arquitetural.** Um LLM com Browsing pode citar o Art. 46 da LGPD. Não pode simultaneamente ancorar essa citação a um trecho específico de um documento privado que o usuário submeteu — porque o documento privado não está na internet. A arquitetura de dual retriever com `citations[{type: normativo}, {type: user_doc}]` e o guardrail `NO_DOC_ANCHOR` são a materialização técnica desta diferença. Sem citação dupla, o produto regride a chatbot jurídico, categoria já saturada.
+
+**Saída estruturada e integrável.** O produto retorna JSON com schema fixo: `answer`, `citations[]`, `guardrail_status`, `session_id`, `query_id`, `trace_id`. Esse contrato de saída permite integração com workflows de GRC, sistemas de gestão documental, pipelines de auditoria e relatórios exportáveis. Uma interface de chat não é integrável — é terminal. A diferença entre sistema e ferramenta de chat é exatamente esta.
+
+**Cadeia de auditoria verificável.** `session_id → query_id → trace_id` no Langfuse, scores de faithfulness e attribution do judge assíncrono, `corpus_version` na resposta. Em contexto regulatório — especialmente em due diligence, auditorias externas e eventual contencioso —  é necessário demonstrar o que foi analisado, com base em qual versão exata da norma, com qual grau de confiança avaliado e em qual momento. Nenhuma interface de chat oferece esse nível de rastreabilidade por design.
+
+O governa-rag não compete com ChatGPT na dimensão de conhecimento jurídico geral. Compete na dimensão de análise privada, auditável e integrável de documentos confidenciais — um problema que LLMs públicos com web search estruturalmente não resolvem.
+
 ---
 
 ## 2. Corpus Normativo (Base de Referência)
 
 ### 2.1 Documentos Incluídos
 
-| Documento | Jurisdição | Idioma | Fonte |
-|---|---|---|---|
-| LGPD (Lei 13.709/2018) | Brasil | PT | planalto.gov.br |
-| Guias e resoluções da ANPD | Brasil | PT | gov.br/anpd |
-| PL 2338/2023 (Marco Legal IA) | Brasil | PT | camara.leg.br |
-| EU AI Act (versão consolidada) | EU | EN | eur-lex.europa.eu |
-| NIST AI RMF 1.0 | EUA | EN | nist.gov |
-| ISO/IEC 42001:2023 (draft público) | Internacional | EN | iso.org |
-| Resoluções BCB relevantes (3040, 4658) | Brasil | PT | bcb.gov.br |
+**Corpus MVP** (implementado no `manifest.yaml`):
 
-Este corpus é persistente, versionado e curado — é o diferencial do produto. Não é gerado por usuários.
+| ID no manifest | Documento | Jurisdição | Idioma | Fetch |
+|---|---|---|---|---|
+| `lgpd_compilada` | LGPD — Lei 13.709/2018 (texto compilado) | Brasil | PT | HTML (planalto) |
+| `pl_2338_2023` | PL 2338/2023 — Marco Legal de IA | Brasil | PT | PDF (senado) |
+| `anpd_resolucao_15_incidente` | Resolução CD/ANPD nº 15/2024 — Incidentes | Brasil | PT | PDF (gov.br/anpd) |
+| `eu_ai_act_2024` | EU AI Act — Regulation (EU) 2024/1689 | EU | EN | PDF (eur-lex) |
+| `nist_ai_rmf_1_0` | NIST AI RMF 1.0 | EUA | EN | PDF (nvlpubs.nist.gov) |
+
+**Corpus v1** (adicionado quando MVP estiver estável):
+
+| Documento | Justificativa de inclusão | Bloqueador |
+|---|---|---|
+| ANPD — Guia de Boas Práticas para RIPD | Necessário para análise de RIPDs, caso de uso primário | URL pública disponível |
+| ANPD — Guia de Segurança da Informação | Complementa análise de contratos e políticas de segurança | URL pública disponível |
+| Resoluções BCB 3040 e 4658 | Relevante para clientes fintech com obrigações BACEN | PDFs disponíveis em bcb.gov.br |
+| ISO/IEC 42001:2023 | Framework de gestão de IA; versão paga — requer aquisição ou substituição por artefato derivado público | **Bloqueado:** norma publicada é paga; draft público retirado em 2024 |
+
+> **Decisão de escopo:** ISO/IEC 42001 permanece fora do MVP e de v1 até que seja identificada fonte pública acessível (comentário técnico ABNT, summary oficial, ou aquisição da norma). Não incluir fonte inacessível no manifest evita falha silenciosa no ingestor.
 
 ### 2.2 Pipeline de Ingestão (Corpus Normativo)
 
@@ -61,7 +88,7 @@ PDF (fonte primária)
   → chunking hierárquico por estrutura legal (artigo > inciso > alínea)
   → fallback sliding window 512 tokens, overlap 128
   → embedding multilingual-e5-large
-  → upsert Qdrant Cloud com payload estruturado
+  → upsert Qdrant local (Docker) com payload estruturado
 ```
 
 Metadados obrigatórios: `source_doc`, `article_ref`, `jurisdiction`, `language`, `ingestion_date`, `chunk_id`, `corpus_version`, `content_hash`, `active`.
@@ -135,7 +162,7 @@ Client (HTTP) — envia {document, question, jurisdiction[]}
 │  ┌────────────────────────────────────────────┐    │
 │  │           Dual Retriever                   │    │
 │  │                                            │    │
-│  │  query → Qdrant Cloud   (corpus normativo) │    │
+│  │  query → Qdrant local  (corpus normativo) │    │
 │  │  query → Session Store  (doc do usuário)   │    │
 │  │                                            │    │
 │  │  merge + rerank por relevância             │    │
@@ -619,7 +646,9 @@ Response 200:
 governa-rag/
 ├── corpus/
 │   ├── manifest.yaml
-│   └── download.py
+│   ├── download.py               # fetch + idempotência por content_hash
+│   ├── watch.py                  # detecção de mudança + alerta (v1)
+│   └── raw/                      # PDFs e HTMLs baixados; não versionado no git
 ├── src/
 │   ├── gateway/
 │   │   ├── main.py
@@ -716,13 +745,13 @@ CI a cada push em `main`: retrieval recall@dual, faithfulness médio, attributio
 
 ### MVP (portfólio + demo)
 
-- [ ] Ingestor do corpus normativo (LGPD + EU AI Act + PL 2338)
+- [ ] Ingestor do corpus normativo (5 documentos do manifest: LGPD, PL 2338, ANPD Resolução 15, EU AI Act, NIST AI RMF)
 - [ ] doc_processor: parse + chunking de documentos do usuário
 - [ ] Presidio no documento do usuário (PatternRecognizer BR custom)
 - [ ] Session store in-memory com TTL
-- [ ] Dual retriever (Qdrant + session store)
+- [ ] Dual retriever (Qdrant local + session store)
 - [ ] Prompt template com dois blocos contextuais
-- [ ] Guardrails NO_GROUNDED_ANSWER + NO_DOC_ANCHOR
+- [ ] Guardrails: NO_GROUNDED_ANSWER + NO_DOC_ANCHOR + GENERATION_SCHEMA_ERROR
 - [ ] Langfuse instrumentado end-to-end
 - [ ] Judge com 3 dimensões (few-shot)
 - [ ] API shape com session_id e citations[]
@@ -737,9 +766,11 @@ CI a cada push em `main`: retrieval recall@dual, faithfulness médio, attributio
 - [ ] OTel exportando para backend configurável
 - [ ] Dashboard Streamlit com os três painéis
 - [ ] Multi-tenancy (tenant_id no payload Qdrant + filtro obrigatório)
-- [ ] Corpus completo (todos os documentos do manifesto)
+- [ ] Corpus expandido: ANPD Guia RIPD + Guia Segurança + Resoluções BCB (manifest v1)
+- [ ] `corpus/watch.py` — detecção de mudança por content_hash + alerta + re-ingestão semi-automática após aprovação humana
+- [ ] Scrubbing condicional da query via Presidio (score > 0.85)
 - [ ] Golden set com 50+ entradas curadas
-- [ ] CI com threshold de regressão
+- [ ] CI com threshold de regressão por métrica (recall@dual, faithfulness, latência)
 
 ### v2 (SaaS)
 
@@ -770,4 +801,3 @@ CI a cada push em `main`: retrieval recall@dual, faithfulness médio, attributio
 **In-memory para session store no MVP:** elimina Redis do Docker Compose inicial. Limitação: uma única instância do processo. Redis entra em v1 quando múltiplos workers forem necessários.
 
 **Dense-only no MVP:** implementar hybrid search antes de ter o pipeline dual funcionando é a ordem errada. A limitação é documentada. Hybrid com Qdrant sparse vectors (nativo, sem BM25 externo) entra em v1.
-
